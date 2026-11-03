@@ -1,0 +1,139 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "script-sft-record",
+  "title": "中文短剧 SFT 样本（JSONL，每行一条）",
+  "description": "训练只用 prompt / completion（TRL prompt-completion 对话格式，只对 completion 计 loss）；meta 仅用于筛选、划分、评测，导出训练集时剔除（validate_dataset.py data --export）。completion 内容的剧本格式由 validate_dataset.py 逐行校验，本文件只约束外层结构与枚举。",
+  "type": "object",
+  "required": ["prompt", "completion", "meta"],
+  "additionalProperties": false,
+  "properties": {
+    "prompt": {
+      "type": "array",
+      "minItems": 1,
+      "description": "可含 system；最后一条必须是 user（由脚本检查）。",
+      "items": { "$ref": "#/definitions/promptMessage" }
+    },
+    "completion": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 1,
+      "description": "恰好一条 assistant 消息；只放纯文本正文，不要手写 <|im_end|> 等特殊 token，结束标记由 chat template 追加。",
+      "items": { "$ref": "#/definitions/assistantMessage" }
+    },
+    "meta": { "$ref": "#/definitions/meta" }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": { "meta": { "properties": { "task_type": { "const": "episode_generation" } }, "required": ["task_type"] } },
+        "required": ["meta"]
+      },
+      "then": {
+        "properties": { "meta": { "properties": { "output_kind": { "const": "episode" } } } }
+      }
+    },
+    {
+      "if": {
+        "properties": { "meta": { "properties": { "output_kind": { "const": "episode" } }, "required": ["output_kind"] } },
+        "required": ["meta"]
+      },
+      "then": {
+        "properties": { "completion": { "items": { "properties": { "content": { "pattern": "^## 第 [0-9]+ 集\\n" } } } } }
+      }
+    },
+    {
+      "if": {
+        "properties": { "meta": { "properties": { "output_kind": { "const": "scenes" } }, "required": ["output_kind"] } },
+        "required": ["meta"]
+      },
+      "then": {
+        "properties": { "completion": { "items": { "properties": { "content": { "pattern": "^### 第 [0-9]+ 场 · " } } } } }
+      }
+    }
+  ],
+  "definitions": {
+    "promptMessage": {
+      "type": "object",
+      "required": ["role", "content"],
+      "additionalProperties": false,
+      "properties": {
+        "role": { "enum": ["system", "user", "assistant"] },
+        "content": { "type": "string", "minLength": 1 }
+      }
+    },
+    "assistantMessage": {
+      "type": "object",
+      "required": ["role", "content"],
+      "additionalProperties": false,
+      "properties": {
+        "role": { "const": "assistant" },
+        "content": { "type": "string", "minLength": 10 }
+      }
+    },
+    "constraints": {
+      "type": "object",
+      "description": "用户指令里的可机检约束，校验器会拿它和 completion 对账（约束遵循）。",
+      "additionalProperties": false,
+      "properties": {
+        "episode_index": { "type": "integer", "minimum": 1 },
+        "target_seconds": { "type": "integer", "minimum": 30, "maximum": 600 },
+        "required_tags": {
+          "type": "array",
+          "description": "必须出现在『认领爽点』里的标签",
+          "uniqueItems": true,
+          "items": { "type": "string", "minLength": 1 }
+        }
+      }
+    },
+    "meta": {
+      "type": "object",
+      "required": ["id", "work_id", "task_type", "output_kind", "split", "source", "provenance", "review_status", "language"],
+      "additionalProperties": false,
+      "properties": {
+        "id": { "type": "string", "pattern": "^[A-Za-z0-9_-]{1,80}$", "description": "全库唯一" },
+        "work_id": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9_-]{1,80}$",
+          "description": "同一个原创故事（同一设定/人物/主线）的所有集数和所有衍生任务共用同一个 work_id；train/validation/test 只按它划分。"
+        },
+        "parent_id": { "type": ["string", "null"], "description": "衍生样本（续写/改写/修改）的来源样本 id；必须与来源同 work_id、同 split。" },
+        "task_type": {
+          "enum": [
+            "episode_generation", "scene_continuation", "scene_rewrite", "instruction_edit",
+            "outline_generation", "logic_review", "error_correction"
+          ],
+          "description": "前 4 个是第一轮（单集生成 / 场景续写·改写 / 指令修改）；后 3 个第二轮预留，校验器默认拒收，加 --allow-round2 放行。"
+        },
+        "output_kind": {
+          "enum": ["episode", "scenes"],
+          "description": "episode：completion 是完整单集（以『## 第 N 集』开头）；scenes：一个或多个场景（以『### 第 N 场 · 』开头）。"
+        },
+        "split": { "enum": ["train", "validation", "test"] },
+        "source": { "enum": ["human_written", "teacher_generated", "teacher_edited", "rule_generated", "model_generated"] },
+        "teacher": { "type": ["string", "null"], "description": "source 为 teacher_generated / teacher_edited 时必填，写模型名与版本。" },
+        "provenance": {
+          "enum": ["original_synthetic", "human_original", "licensed_real_work"],
+          "description": "内容来源：原创合成 / 人工原创 / 已取得授权的真实作品。未授权的真实作品不应入库。"
+        },
+        "review_status": { "enum": ["unreviewed", "auto_passed", "judge_passed", "human_verified"] },
+        "quality_score": { "type": ["number", "null"], "minimum": 1, "maximum": 5 },
+        "language": { "const": "zh" },
+        "constraints": { "$ref": "#/definitions/constraints" },
+        "error_type": {
+          "enum": [null, "timeline_conflict", "character_ooc", "prop_continuity", "foreshadowing_break", "other"],
+          "description": "第二轮 error_correction 任务使用。"
+        }
+      },
+      "allOf": [
+        {
+          "if": { "properties": { "source": { "enum": ["teacher_generated", "teacher_edited"] } }, "required": ["source"] },
+          "then": { "required": ["teacher"], "properties": { "teacher": { "type": "string", "minLength": 1 } } }
+        },
+        {
+          "if": { "properties": { "task_type": { "const": "error_correction" } }, "required": ["task_type"] },
+          "then": { "required": ["error_type"], "properties": { "error_type": { "type": "string" } } }
+        }
+      ]
+    }
+  }
+}
